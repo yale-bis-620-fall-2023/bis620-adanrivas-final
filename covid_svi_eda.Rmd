@@ -1,0 +1,275 @@
+---
+title: "cdc_svi_covid_eda"
+author: "Adán Rivas"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+
+```{r library imports}
+library(bis620f23final)
+library(readr)
+library(DT)
+library(ggplot2)
+library(gtsummary)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(scico)
+library(RColorBrewer)
+library(corrplot)
+library(sf)
+
+sf_use_s2(FALSE)
+```
+
+
+```{r read in svi data dictionary}
+project_data_dir <- "~/git/github.com/yale-bis-620-fall-2023/bis620-adanrivas-final/bis620f23final/inst/data"
+svi_dir <- file.path(project_data_dir, "svi")
+svi_dd <- read_csv(file.path(svi_dir, "data-dictionary-2018.csv"), show_col_types=FALSE)
+
+svi_dd |>
+  select(var_name, description) |>
+  datatable()
+```
+
+
+```{r read in svi US tract data}
+svi_tract_df <- read_sf(file.path(svi_dir, "SVI2018_US_tract.shp")) |>
+  rename_with(tolower) |>
+  mutate_if(is.numeric, ~ ifelse(.x == -999, NA, .x))
+
+svi_tract_df
+```
+
+```{r summarize MA spatial data}
+state_name = "MASSACHUSETTS"
+
+svi_tract_df |>
+  dplyr::filter(state == state_name) |>
+  as_tibble() |>
+  dplyr::select(area_sqmi, e_unemp, e_uninsur, e_pov, e_pci) |>
+  tbl_summary(missing_text = "NA")
+
+
+ma_svi_tract_df <- svi_tract_df |>
+  filter(state == state_name) 
+
+ma_county_svi <- svi_tract_df |>
+  filter(state == state_name) |>
+  group_by(county) |>
+  summarize(
+    # theme 1: socioeconomic status
+    rpl_theme1_mean = mean(rpl_theme1, na.rm=TRUE),
+    rpl_theme1_med = median(rpl_theme1, na.rm=TRUE),
+    # theme 2: household composition
+    rpl_theme2_mean = mean(rpl_theme2, na.rm=TRUE),
+    rpl_theme2_med = median(rpl_theme2, na.rm=TRUE),
+    # theme 3: minority status and language
+    rpl_theme3_mean = mean(rpl_theme3, na.rm=TRUE),
+    rpl_theme3_med = median(rpl_theme3, na.rm=TRUE),
+    # theme 4: housing type and transportation
+    rpl_theme4_mean = mean(rpl_theme4, na.rm=TRUE),
+    rpl_theme4_med = median(rpl_theme4, na.rm=TRUE),
+    # themes: aggregate measure
+    rpl_themes_mean = mean(rpl_themes, na.rm=TRUE),
+    rpl_themes_med = median(rpl_themes, na.rm=TRUE),
+    ) |>
+  suppressMessages()
+
+```
+
+```{r visualizing svi data}
+
+ma_town_ses_stats_plt <- ggplot(data=ma_svi_tract_df, aes(geometry = geometry, fill = rpl_theme1)) +
+  geom_sf() +
+  scale_fill_viridis_b(direction = -1) +
+  theme_bw()
+
+show(ma_town_ses_stats_plt)
+
+
+ma_town_hh_stats_plt <- ggplot(data=ma_svi_tract_df, aes(geometry = geometry, fill = rpl_theme2)) +
+  geom_sf() +
+  scale_fill_viridis_b(direction = -1) +
+  theme_bw()
+
+show(ma_town_hh_stats_plt)
+
+# estimated per capita income
+ma_county_theme1_mean_stats_plt <- ggplot(ma_county_svi, aes(geometry = geometry, fill = rpl_theme1_mean)) +
+  geom_sf() +
+  scale_fill_viridis_b(direction = -1) +
+  theme_bw()
+
+show(ma_county_ses_stats_plt)
+
+# estimated person below poverty level
+ma_county_theme1_med_stats_plt <- ggplot(ma_county_svi, aes(geometry = geometry, fill = rpl_theme1_med)) +
+  geom_sf() +
+  scale_fill_viridis_b(direction = -1) +
+  theme_bw()
+
+show(ma_county_pov_stats_plt)
+
+# estimated single parent households
+ma_county_theme2_stats_plt1 <- ggplot(ma_county_svi, aes(geometry = geometry, fill = rpl_theme2_med)) +
+  geom_sf() +
+  scale_fill_viridis_b(direction=-1, name="Household Attributes") +
+  theme_bw() 
+
+show(ma_county_theme2_stats_plt1)
+
+ma_county_theme2_stats_plt2 <- ggplot(ma_county_svi, aes(geometry = geometry, fill = rpl_theme2_med)) +
+  geom_sf() +
+  scico::scale_fill_scico(palette = "lajolla", direction=-1, name="Household Attributes") +
+  theme_bw()
+
+show(ma_county_theme2_stats_plt2)
+
+ma_county_theme2_stats_plt3 <- ggplot(ma_county_svi, aes(geometry = geometry, fill = rpl_theme2_med)) +
+  geom_sf() +
+  scale_fill_steps2(name="Household Attributes") +
+  theme_bw()
+
+show(ma_county_theme2_stats_plt3)
+```
+
+
+```{r read in covid data}
+cdc_covid_st_county_cases_url <- "https://data.cdc.gov/resource/3nnm-4jni.csv?$query=SELECT%0A%20%20%60county%60%2C%0A%20%20%60county_fips%60%2C%0A%20%20%60state%60%2C%0A%20%20%60county_population%60%2C%0A%20%20%60health_service_area_number%60%2C%0A%20%20%60health_service_area%60%2C%0A%20%20%60health_service_area_population%60%2C%0A%20%20%60covid_inpatient_bed_utilization%60%2C%0A%20%20%60covid_hospital_admissions_per_100k%60%2C%0A%20%20%60covid_cases_per_100k%60%2C%0A%20%20%60covid_19_community_level%60%2C%0A%20%20%60date_updated%60%0AWHERE%0A%20%20caseless_one_of(%0A%20%20%20%20%60state%60%2C%0A%20%20%20%20%22Massachusetts%22%2C%0A%20%20%20%20%22Connecticut%22%2C%0A%20%20%20%20%22California%22%2C%0A%20%20%20%20%22New%20York%22%0A%20%20)%0A%20%20AND%20(%60date_updated%60%0A%20%20%20%20%20%20%20%20%20BETWEEN%20%222021-01-01T00%3A00%3A00%22%20%3A%3A%20floating_timestamp%0A%20%20%20%20%20%20%20%20%20AND%20%222022-12-31T23%3A59%3A59%22%20%3A%3A%20floating_timestamp)%0AORDER%20BY%20%60date_updated%60%20ASC%20NULL%20LAST"
+
+cdc_covid_st_county_vax_rates_url <- "https://data.cdc.gov/resource/8xkx-amqh.csv?$query=SELECT%0A%20%20%60date%60%2C%0A%20%20%60fips%60%2C%0A%20%20%60mmwr_week%60%2C%0A%20%20%60recip_county%60%2C%0A%20%20%60recip_state%60%2C%0A%20%20%60completeness_pct%60%2C%0A%20%20%60administered_dose1_recip%60%2C%0A%20%20%60administered_dose1_pop_pct%60%2C%0A%20%20%60administered_dose1_recip_5plus%60%2C%0A%20%20%60administered_dose1_recip_5pluspop_pct%60%2C%0A%20%20%60administered_dose1_recip_12plus%60%2C%0A%20%20%60administered_dose1_recip_12pluspop_pct%60%2C%0A%20%20%60administered_dose1_recip_18plus%60%2C%0A%20%20%60administered_dose1_recip_18pluspop_pct%60%2C%0A%20%20%60administered_dose1_recip_65plus%60%2C%0A%20%20%60administered_dose1_recip_65pluspop_pct%60%2C%0A%20%20%60series_complete_yes%60%2C%0A%20%20%60series_complete_pop_pct%60%2C%0A%20%20%60series_complete_5plus%60%2C%0A%20%20%60series_complete_5pluspop_pct%60%2C%0A%20%20%60series_complete_5to17%60%2C%0A%20%20%60series_complete_5to17pop_pct%60%2C%0A%20%20%60series_complete_12plus%60%2C%0A%20%20%60series_complete_12pluspop_pct%60%2C%0A%20%20%60series_complete_18plus%60%2C%0A%20%20%60series_complete_18pluspop_pct%60%2C%0A%20%20%60series_complete_65plus%60%2C%0A%20%20%60series_complete_65pluspop_pct%60%2C%0A%20%20%60booster_doses%60%2C%0A%20%20%60booster_doses_vax_pct%60%2C%0A%20%20%60booster_doses_5plus%60%2C%0A%20%20%60booster_doses_5plus_vax_pct%60%2C%0A%20%20%60booster_doses_12plus%60%2C%0A%20%20%60booster_doses_12plus_vax_pct%60%2C%0A%20%20%60booster_doses_18plus%60%2C%0A%20%20%60booster_doses_18plus_vax_pct%60%2C%0A%20%20%60booster_doses_50plus%60%2C%0A%20%20%60booster_doses_50plus_vax_pct%60%2C%0A%20%20%60booster_doses_65plus%60%2C%0A%20%20%60booster_doses_65plus_vax_pct%60%2C%0A%20%20%60second_booster_50plus%60%2C%0A%20%20%60second_booster_50plus_vax_pct%60%2C%0A%20%20%60second_booster_65plus%60%2C%0A%20%20%60second_booster_65plus_vax_pct%60%2C%0A%20%20%60svi_ctgy%60%2C%0A%20%20%60series_complete_pop_pct_svi%60%2C%0A%20%20%60series_complete_5pluspop_pct_svi%60%2C%0A%20%20%60series_complete_5to17pop_pct_svi%60%2C%0A%20%20%60series_complete_12pluspop_pct_svi%60%2C%0A%20%20%60series_complete_18pluspop_pct_svi%60%2C%0A%20%20%60series_complete_65pluspop_pct_svi%60%2C%0A%20%20%60metro_status%60%2C%0A%20%20%60series_complete_pop_pct_ur_equity%60%2C%0A%20%20%60series_complete_5pluspop_pct_ur_equity%60%2C%0A%20%20%60series_complete_5to17pop_pct_ur_equity%60%2C%0A%20%20%60series_complete_12pluspop_pct_ur_equity%60%2C%0A%20%20%60series_complete_18pluspop_pct_ur_equity%60%2C%0A%20%20%60series_complete_65pluspop_pct_ur_equity%60%2C%0A%20%20%60booster_doses_vax_pct_svi%60%2C%0A%20%20%60booster_doses_12plusvax_pct_svi%60%2C%0A%20%20%60booster_doses_18plusvax_pct_svi%60%2C%0A%20%20%60booster_doses_65plusvax_pct_svi%60%2C%0A%20%20%60booster_doses_vax_pct_ur_equity%60%2C%0A%20%20%60booster_doses_12plusvax_pct_ur_equity%60%2C%0A%20%20%60booster_doses_18plusvax_pct_ur_equity%60%2C%0A%20%20%60booster_doses_65plusvax_pct_ur_equity%60%2C%0A%20%20%60census2019%60%2C%0A%20%20%60census2019_5pluspop%60%2C%0A%20%20%60census2019_5to17pop%60%2C%0A%20%20%60census2019_12pluspop%60%2C%0A%20%20%60census2019_18pluspop%60%2C%0A%20%20%60census2019_65pluspop%60%2C%0A%20%20%60bivalent_booster_5plus%60%2C%0A%20%20%60bivalent_booster_5plus_pop_pct%60%2C%0A%20%20%60bivalent_booster_12plus%60%2C%0A%20%20%60bivalent_booster_12plus_pop_pct%60%2C%0A%20%20%60bivalent_booster_18plus%60%2C%0A%20%20%60bivalent_booster_18plus_pop_pct%60%2C%0A%20%20%60bivalent_booster_65plus%60%2C%0A%20%20%60bivalent_booster_65plus_pop_pct%60%0AWHERE%0A%20%20caseless_one_of(%60recip_state%60%2C%20%22CT%22%2C%20%22MA%22%2C%20%22CA%22%2C%20%22NY%22)%0A%20%20AND%20(%60date%60%0A%20%20%20%20%20%20%20%20%20BETWEEN%20%222021-01-01T00%3A00%3A00%22%20%3A%3A%20floating_timestamp%0A%20%20%20%20%20%20%20%20%20AND%20%222022-12-31T23%3A59%3A59%22%20%3A%3A%20floating_timestamp)"
+
+covid_cases_fname <- file.path(COVID_DIR, "United_States_COVID-19_Community_Levels_by_County.csv")
+covid_vax_rates_fname <- file.path(COVID_DIR, "COVID-19_Vaccinations_in_the_United_States_County.csv")
+
+covid_start_date <- lubridate::ymd("2022-02-01")
+covid_end_date <- lubridate::ymd("2022-06-01")
+
+cdc_covid_st_county_cases_df <- read.csv(covid_cases_fname) |>
+  rename_with(tolower) |>
+  mutate(date = as.Date(date_updated)) |>
+  process_covid_df(
+    county_colname="county",
+    start_date=covid_start_date,
+    end_date=covid_end_date)
+
+cdc_covid_st_county_vax_rates_df <- read.csv(covid_vax_rates_fname) |>
+  rename_with(tolower) |>
+  rename("county" = "recip_county", "st_abbr" = "recip_state") |>
+  mutate(date = as.Date(date, format="%m/%d/%Y")) |>
+  process_covid_df(
+    county_colname="county",
+    start_date=covid_start_date,
+    end_date=covid_end_date)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r joining covid cases and svi, echo=FALSE}
+ma_county_svi_covid_cases_df <- cdc_covid_st_county_cases_df |>
+  filter(state == state_name) |>
+  group_by(county, state) |>
+  summarise(
+    covid_cases_per_100k_mean = mean(covid_cases_per_100k),
+    covid_cases_per_100k_sd = sd(covid_cases_per_100k),
+    n_samples = n(),
+    covid_cases_per_100k_q1 = quantile(covid_cases_per_100k, probs = 0.25),
+    covid_cases_per_100k_q3 = quantile(covid_cases_per_100k, probs = 0.75)
+  ) |>
+  mutate(
+    covid_cases_per_100k_se = covid_cases_per_100k_sd / sqrt(n_samples),
+    covid_cases_per_100k_ub = covid_cases_per_100k_mean + qt(1 - (0.05 / 2), n_samples - 1) * covid_cases_per_100k_se,
+    covid_cases_per_100k_lb = covid_cases_per_100k_mean - qt(1 - (0.05 / 2), n_samples - 1) * covid_cases_per_100k_se,
+    covid_cases_per_100k_iqr = covid_cases_per_100k_q3 - covid_cases_per_100k_q1
+  ) |>
+  inner_join(y=ma_county_svi, by=c("county"))
+
+
+ma_county_covid_cases_ub_plt <- ggplot(ma_county_svi_covid_cases_df, aes(geometry = geometry, fill = covid_cases_per_100k_ub)) +
+  geom_sf() +
+  scico::scale_fill_scico(palette = "lajolla", direction=-1, name="") +
+  labs(title="MA Upper Bound County-level Covid Cases") + 
+  theme_bw()
+
+show(ma_county_covid_cases_ub_plt)
+
+
+ma_county_covid_cases_mean_plt <- ggplot(ma_county_svi_covid_cases_df, aes(geometry = geometry, fill = covid_cases_per_100k_mean)) +
+  geom_sf() +
+  scico::scale_fill_scico(palette = "lajolla", direction=-1, name="") +
+  labs(title="MA Average County-level Covid Cases") + 
+  theme_bw()
+
+show(ma_county_covid_cases_mean_plt)
+
+
+ma_county_covid_cases_iqr_plt <- ggplot(ma_county_svi_covid_cases_df, aes(geometry = geometry, fill = covid_cases_per_100k_iqr)) +
+  geom_sf() +
+  scico::scale_fill_scico(palette = "lajolla", direction=-1, name="") +
+  labs(title="MA IQR County-level Covid Cases") + 
+  theme_bw()
+
+show(ma_county_covid_cases_iqr_plt)
+```
+
+
+```{r joining covid vax rates and svi, echo=FALSE}
+uppercase_state_name <- toupper(state_name)
+st_name_abbr <- STATE_ABBR_DICT[[uppercase_state_name]]
+
+ma_county_svi_covid_vax_rates_df <- cdc_covid_st_county_vax_rates_df |>
+  filter(st_abbr == st_name_abbr) |>
+  group_by(county, st_abbr) |>
+  summarise(
+    administered_dose1_pop_pct_mean = mean(administered_dose1_pop_pct, na.rm=TRUE),
+    administered_dose1_pop_pct_sd = sd(administered_dose1_pop_pct, na.rm=TRUE),
+    n_samples = n(),
+    administered_dose1_pop_pct_q1 = quantile(administered_dose1_pop_pct, probs = 0.25, na.rm=TRUE),
+    administered_dose1_pop_pct_q3 = quantile(administered_dose1_pop_pct, probs = 0.75, na.rm=TRUE)
+  ) |>
+  inner_join(y=ma_county_svi, by=c("county"))
+
+
+ma_county_covid_vax_rates_mean_plt <- ggplot(ma_county_svi_covid_vax_rates_df, aes(geometry = geometry, fill = 100-administered_dose1_pop_pct_mean)) +
+  geom_sf() +
+  scico::scale_fill_scico(palette = "lajolla", direction=-1, name="") +
+  labs(title="MA Average County-level Covid Un-vaccinated Rates") + 
+  theme_bw()
+
+show(ma_county_covid_vax_rates_mean_plt)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+
+```{r correlation matrix}
+
+# create a single data frame with all county measures
+
+cleaned_ma_county_svi_covid_vax_rates_df <- ma_county_svi_covid_vax_rates_df |>
+  na.omit() |>
+  select(-c(geometry, st_abbr, n_samples)) |>
+  dplyr::select(!ends_with("_med"))
+
+ma_county_level_measures <- ma_county_svi_covid_cases_df |>
+  tibble() |>
+  dplyr::select(!starts_with("rpl_theme")) |>
+  dplyr::select(-c(geometry, n_samples)) |>
+  dplyr::inner_join(
+    y=cleaned_ma_county_svi_covid_vax_rates_df, 
+    by="county")
+
+corr_matrix <- ma_county_level_measures |>
+  select(-c(county, state)) |>
+  as.matrix() |>
+  cor(method="kendall") |>
+  corrplot(method="color", col=brewer.pal(n=8, name="PuRd")) 
+  
+show(corr_matrix)
+```
